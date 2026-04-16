@@ -1,6 +1,7 @@
 import streamlit as st
 from dotenv import load_dotenv
-from google import genai
+from groq import APIError as GroqAPIError
+from groq import Groq
 import os
 load_dotenv()
 import pypdf
@@ -13,9 +14,13 @@ def extract_text_from_pdf(file):
     return text
 
 def get_ai_response(file_content):
-    client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY is missing. Add it to your .env file.")
+
+    client = Groq(api_key=api_key)
         
-    prompt = f"""You are an AI assistant that helps generate interview questions based on resume content. Given a candidate's resume, return the top 15 interview questions (technical, behavioral, and situational) tailored to their skills, experience, and qualifications. Use the examples below to guide your responses.
+    prompt = f"""You are an AI assistant that helps generate interview questions based on resume content. Given a candidate's resume, return the top 20 interview questions (technical, behavioral, and situational) tailored to their skills, experience, and qualifications. Use the examples below to guide your responses.
 
     Example 1:
     Resume Summary:
@@ -37,7 +42,7 @@ def get_ai_response(file_content):
     Describe a time when you optimized a database query.
 
     How do you manage version control using Git in a team setting?
-    ... (up to 15 questions)
+    ... (up to 20 questions)
 
     Example 2:
     Resume Summary:
@@ -59,7 +64,7 @@ def get_ai_response(file_content):
     Tell me about a challenging analysis project and how you approached it.
 
     How proficient are you in writing complex SQL queries?
-    ... (up to 15 questions)
+    ... (up to 20 questions)
 
     Now use this format for the uploaded resume:
 
@@ -72,20 +77,27 @@ def get_ai_response(file_content):
     {file_content}
 
     Your Task:
-    Generate 15 tailored interview questions (technical + behavioral) based on the resume content.
+    Generate 20 tailored interview questions (technical + behavioral) based on the resume content.
 
     """
     
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=[prompt]
+    response = client.chat.completions.create(
+        model="openai/gpt-oss-120b",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        temperature=0.2
     )
-    return response.text
+    return response.choices[0].message.content
 
 st.set_page_config(page_title="AI Interview Questions Generator", layout="centered")
 with st.sidebar:
     st.title("Upload your resume (PDF or DOCX)")
     uploaded_file = st.file_uploader("",type=["pdf", "docx"])
+    file_content = None
     
     if uploaded_file is not None:
         st.success("File uploaded successfully!")
@@ -98,7 +110,24 @@ with st.sidebar:
         
         
 if button:
-    with st.spinner("Generating questions..."):
-        response = get_ai_response(file_content)
-        st.write(response)
-        st.success("Questions generated successfully!")
+    if not uploaded_file or not file_content:
+        st.warning("Please upload a readable PDF resume before generating questions.")
+    else:
+        with st.spinner("Generating questions..."):
+            try:
+                response = get_ai_response(file_content)
+                st.write(response)
+                st.success("Questions generated successfully!")
+            except ValueError as exc:
+                st.error(str(exc))
+            except GroqAPIError as exc:
+                error_message = str(exc)
+                if "429" in error_message or "rate_limit" in error_message.lower():
+                    st.error(
+                        "Your Groq API quota or rate limit has been reached right now. "
+                        "Wait a bit and try again, or check your Groq account limits."
+                    )
+                else:
+                    st.error(f"Groq API request failed: {error_message}")
+            except Exception as exc:
+                st.error(f"Something went wrong while generating questions: {exc}")
